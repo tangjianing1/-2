@@ -1,0 +1,108 @@
+#将所有照片都转成 numpy.ndarray 格式，而 target 则是这张照片的评分，这里要注意下机器的内存使用状况，x_total 需要用将近 12G 的内存 (大概)，如果机器内存没有 20G 以上，可以先对所有照片进行 resize 成比较小的尺寸。
+#下载数据集压缩包，解压后可以看到，5500 张图片在 Images 目录里，
+# 而打分结果在 All_Ratings.xlsx 这份表格里
+import pandas as pd
+ratings = pd.read_excel('AVA_grace.xlsx')#AVA图片的评分
+
+filenames = ratings.groupby('Filename').size().index.tolist()
+
+labels = []
+
+for filename in filenames:
+    df = ratings[ratings['Filename'] == filename]
+    score = round(df['Rating'].mean(), 2)
+    labels.append({'Filename': filename, 'score': score})
+
+labels_df = pd.DataFrame(labels)
+
+import os
+import numpy as np
+from keras.preprocessing.image import load_img
+from sklearn.model_selection import train_test_split
+
+img_width, img_height, channels = 350, 350, 3
+sample_dir = './images/'
+nb_samples = len(os.listdir(sample_dir))
+input_shape = (img_width, img_height, channels)
+
+x_total = np.empty((nb_samples, img_width, img_height, channels), dtype=np.float32)
+y_total = np.empty((nb_samples, 1), dtype=np.float32)
+
+for i, fn in enumerate(os.listdir(sample_dir)):
+    img = load_img('%s/%s' % (sample_dir, fn))
+    x = img_to_array(img).reshape(img_height, img_width, channels)
+    x = x.astype('float32') / 255.
+    y = labels_df[labels_df.Filename == fn].score.values
+    y = y.astype('float32')
+    x_total[i] = x
+    y_total[i] = y
+#然后对数据进行分隔，训练集 3520 个，训练中的验证集 880 个，测试集 1100 个。
+
+seed = 42
+x_train_all, x_test, y_train_all, y_test = train_test_split(x_total, y_total, test_size=0.2, random_state=seed)
+x_train, x_val, y_train, y_val = train_test_split(x_train_all, y_train_all, test_size=0.2, random_state=seed)
+
+#加载 Keras 的 ResNet50 预训练模型，去掉最后的 softmax 层，然后再加上一层 dense 全连接层，将 ResNet50 模型的其余参数设为不可训练，也就是先直接训练最后的 dense 层的参数；因为是做回归，所以损失函数我们使用 mse：
+
+from keras.models import Sequential
+from keras.applications import ResNet50
+from keras.layers import Dense
+
+resnet = ResNet50(include_top=False, pooling='avg', input_shape=input_shape)
+model = Sequential()
+model.add(resnet)
+model.add(Dense(1))
+model.layers[0].trainable = False
+
+model.compile(loss='mse', optimizer='adam')
+history = model.fit(batch_size=32, x=x_train, y=y_train, epochs=30)
+
+#将ResNet50的参数设置为可训练，然后再训练30个epochs，奇迹发生了：
+
+from keras.callbacks import ModelCheckpoint, ReduceLROnPlateau
+from keras.models import load_model
+
+filepath = "{epoch:02d}-{val_loss:.2f}.h5"
+checkpoint = ModelCheckpoint(filepath, monitor='val_loss', verbose=1, save_best_only=True, mode='min')
+reduce_learning_rate = ReduceLROnPlateau(monitor='loss',
+                                         factor=0.1,
+                                         patience=2,
+                                         cooldown=2,
+                                         min_lr=0.00001,
+                                         verbose=1)
+callback_list = [checkpoint, reduce_learning_rate]
+
+model.layers[0].trainable = True
+model.compile(loss='mse', optimizer='adam')
+history = model.fit(x=x_train,
+                    y=y_train,
+                    batch_size=8,
+                    epochs=30,
+                    validation_data=(x_val, y_val),
+                    callbacks=callback_list)
+
+best_model = load_model('06-0.15.h5')
+
+best_model.evaluate(x =  x_text,y = y_text)
+plt.scatter(y_text, best_model.predict(x_text))
+plt.plot(y_text, y_text,'ro')
+
+#设置了 checkpoint callback，将验证集的 loss 设为监控项，保存该值最低的模型，因为其实几轮之后 `val_loss` 开始逐渐变大，可能是过拟合了；另外可以根据显卡内存的大小，调整下 batch_size 参数，
+
+#有了模型，我们就可以用来预测新的照片和视频了：
+path = r'./vieo_photo/'   #图像读取地址
+filelist = os.listdir(path)  # 打开对应的文件夹
+total_num = len(filelist)
+sum = 0.0
+for i in range(total_num):
+    jpg_name = path + str(i + 1) + '.jpg' #拼接图像的读取地址
+    #对图像数据类型进行转换
+    image = mp.imread(jpg_name)
+    img = imresize(img,size = (img_higher,img_width))
+    text_x = img_to_array(img).reshape(ima_higher,img_width,channels)
+    text_x = text_x / 255
+    text_x = text_x.reshape((1,) + text_x.shape)
+    predicted = model.predict(text_x)
+    sum = sum + predicted[0][0]
+sum = sum / total_num
+print("predicted :0.2f" % sum)
